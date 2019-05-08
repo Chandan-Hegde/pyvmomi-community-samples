@@ -46,14 +46,14 @@ def get_args():
                         help='Password to use when connecting to host')
 
     parser.add_argument('-vm', '--vmname',
-                        required=True,
+                        required=False,
                         action='store',
                         help='VM Name whose performance data needs to be retrieved')
 
     parser.add_argument('-d', '--description', required=False,
                         help="Description for the snapshot")
 
-    parser.add_argument('-n', '--name', required=True,
+    parser.add_argument('-n', '--name', required=False,
                         help="Name for the Snapshot")
 
     parser.add_argument('-memory', required=False,
@@ -65,6 +65,17 @@ def get_args():
                         help="Quiesce boolean",
                         choices=('yes', 'no'),
                         default=False)
+
+    parser.add_argument('-action', required=True,
+                        choices=("create", "delete", "list_all", "list_current", "delete", "revert","delete_all"))
+
+    parser.add_argument('-snapshotname', required=False,
+                        help="Snapshot Name to which you want to revert or delete the one")
+
+    parser.add_argument('-child_snapshot_delete', required=False,
+                        help="To decide if the child snapshot to be deleted while you delete the parent Snapshot",
+                        choices=('yes','no'),
+                        default='no')
 
     args = parser.parse_args()
 
@@ -97,6 +108,7 @@ def get_obj(content, vimtype, name):
 def create_snapshot(si, vm_obj, sn_name, description, sn_memory, sn_quiesce):
 
     """ Creates Snapshot given the VM object and Snapshot name and necessary description"""
+
     desc = None
     if description:
         desc = description
@@ -115,12 +127,114 @@ def create_snapshot(si, vm_obj, sn_name, description, sn_memory, sn_quiesce):
                                       description=desc,
                                       memory=sn_memory,
                                       quiesce=sn_quiesce)
+    print("Creating Snapshot {} on VM {}".format(sn_name, vm_obj.name))
     tasks.wait_for_tasks(si, [task])
 
-    if sn_memory == True:
+    if sn_memory:
         print("Snapshot {} is taken on VM {} with memory".format(sn_name, vm_obj.name))
     else:
         print("Snapshot {} is taken on VM {} with no in-memory".format(sn_name, vm_obj.name))
+
+
+def view_all_snapshot(vm):
+
+    """ View the Tree of Snapshots"""
+
+    if vm.snapshot:
+        snap_info = vm.snapshot
+
+        tree = snap_info.rootSnapshotList
+        while tree[0].childSnapshotList is not None:
+            print("Name : {0}     ===>    Created Time : {1} | Snapshot State : {2} | Description : {3}".format(
+                tree[0].name, tree[0].createTime, tree[0].state, tree[0].description))
+            if len(tree[0].childSnapshotList) < 1:
+                break
+            tree = tree[0].childSnapshotList
+    else:
+        print("No Snapshots found for VM {}".format(vm.name))
+
+
+def get_current_snap_obj(snapshots, snapob):
+    snap_obj = []
+    for snapshot in snapshots:
+        if snapshot.snapshot == snapob:
+            snap_obj.append(snapshot)
+        snap_obj = snap_obj + get_current_snap_obj(
+                                snapshot.childSnapshotList, snapob)
+    return snap_obj
+
+
+def view_current_snapshot(vm):
+
+    """Helps to view the current snapshot"""
+
+    if vm.snapshot:
+        current_snapref = vm.snapshot.currentSnapshot
+        current_snap_obj = get_current_snap_obj(
+            vm.snapshot.rootSnapshotList, current_snapref)
+        current_snapshot = "Name: %s ===>  Description: %s | " \
+                           "CreateTime: %s | State: %s" % (
+                               current_snap_obj[0].name,
+                               current_snap_obj[0].description,
+                               current_snap_obj[0].createTime,
+                               current_snap_obj[0].state)
+        print("Virtual machine %s current snapshot is:" % vm.name)
+        print(current_snapshot)
+    else:
+        print("No Snapshot found for VM {}".format(vm.name))
+
+
+def get_snapshots_by_name_recursively(snapshots, snapname):
+
+    snap_obj = []
+
+    for snapshot in snapshots:
+        if snapshot.name == snapname:
+            snap_obj.append(snapshot)
+        else:
+            snap_obj = snap_obj + get_snapshots_by_name_recursively(
+                                    snapshot.childSnapshotList, snapname)
+    return snap_obj
+
+
+def delete_snapshot(si, vm, snapshot_name, child_snapshot_delete):
+
+    """Delete the Snapshot sn of vm"""
+
+    snap_obj = get_snapshots_by_name_recursively(
+        vm.snapshot.rootSnapshotList, snapshot_name)
+
+    if len(snap_obj) == 1:
+        snap_obj = snap_obj[0].snapshot
+
+        if child_snapshot_delete == "yes":
+            print("Removing snapshot {} along with the child snapshots".format(snapshot_name))
+            task = snap_obj.RemoveSnapshot_Task(True) #Remove child snapshot as well
+            tasks.wait_for_tasks(si, [task])
+
+        if child_snapshot_delete == "no":
+            print("Removing snapshot {} only of VM {}".format(snapshot_name, vm.name))
+            task = snap_obj.RemoveSnapshot_Task(False) #Does not remove the chile snapshot
+            tasks.wait_for_tasks(si, [task])
+
+    else:
+        print("No snapshots found with name: %s on VM: %s" % (snapshot_name, vm.name))
+
+
+def revert_snapshot(si, vm, snapshot_name):
+
+    """ Revert VM to snapshot sn"""
+
+    snap_obj = get_snapshots_by_name_recursively(
+        vm.snapshot.rootSnapshotList, snapshot_name)
+
+    if len(snap_obj) == 1:
+        snap_obj = snap_obj[0].snapshot
+        print("Reverting to snapshot %s" % snapshot_name)
+        task = snap_obj.RevertToSnapshot_Task()
+        tasks.wait_for_tasks(si, [task])
+    else:
+        print("No snapshots found with name: %s on VM: %s" % (snapshot_name, vm.name))
 
 
 def main():
@@ -149,7 +263,38 @@ def main():
     if vm_obj is None:
         raise SystemExit("Unable to locate VirtualMachine.")
 
-    create_snapshot(si, vm_obj, args.name, args.description, args.memory, args.quiesce)
+    if args.action == "create":
+        if args.name is None:
+            print("The Snapshot Name must be specified. -n <snapshot_name> or -name<snap_name>")
+        else:
+            create_snapshot(si, vm_obj, args.name, args.description, args.memory, args.quiesce)
+
+    elif args.action == "list_all":
+        view_all_snapshot(vm_obj)
+
+    elif args.action == "list_current":
+        view_current_snapshot(vm_obj)
+
+    elif args.action == "delete":
+        if args.snapshotname is None:
+            print("Please specify the snapshot name that you want to delete with parameter -snapshotname")
+            exit(1)
+        delete_snapshot(si, vm_obj, args.snapshotname, args.child_snapshot_delete)
+
+    elif args.action == "revert":
+        if args.snapshotname is None:
+            print("Please specify the snapshot name that you want to revert to with parameter -snapshotname")
+            exit(1)
+        revert_snapshot(si, vm_obj, args.snapshotname)
+
+    elif args.action == "delete_all":
+        print("Removing all snapshots for virtual machine %s" % vm_obj.name)
+        task = vm_obj.RemoveAllSnapshots()
+        tasks.wait_for_tasks(si, [task])
+        print("All Snapshots of the VM {} is removed".format(vm_obj.name))
+
+    else:
+        print("Invalid Operation")
 
     del vm_obj
 
