@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 #
-# Inspired from  Michael Rice <michael@michaelrice.org> create_snapshot script in pyvmomi community samples
-#
+#Snapshot Operations on a VM
 #
 
 from __future__ import print_function
